@@ -1,0 +1,82 @@
+name: Test and deploy
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m venv .venv
+      - run: .venv/bin/pip install -r backend/requirements-dev.txt
+      - run: .venv/bin/python -m pytest backend/tests -q
+      - run: shellcheck deploy/*.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: frontend
+  container:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate a temporary application password
+        run: |
+          mkdir -p .secrets
+          chmod 700 .secrets
+          openssl rand -base64 32 > .secrets/app_password
+          chmod 644 .secrets/app_password
+      - run: docker compose up --build --wait --wait-timeout 180
+      - run: |
+          curl --fail http://localhost:8000/api/health
+          curl --fail http://localhost:8000/ | grep 'lang="en"'
+      - name: Publish the tested image
+        id: publish
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag ttdownloader:local "$image:$GITHUB_SHA"
+          docker push "$image:$GITHUB_SHA"
+          digest=$(docker image inspect "$image:$GITHUB_SHA" --format '{{index .RepoDigests 0}}')
+          echo "image=$digest" >> "$GITHUB_OUTPUT"
+      - if: always()
+        run: docker compose logs && docker compose down
+  deploy:
+    needs: container
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy over SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_PORT: ${{ vars.VPS_PORT || '22' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/ttdownloader' }}
+          IMAGE: ${{ needs.container.outputs.image }}
+        run: bash deploy/upload.sh

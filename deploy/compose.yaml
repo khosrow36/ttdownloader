@@ -1,0 +1,28 @@
+services:
+  downloader:
+    image: ${TTDOWNLOADER_IMAGE:?An image digest is required}
+    network_mode: host
+    command: [uvicorn, backend.app:app, --host, 127.0.0.1, --port, "18000"]
+    environment:
+      APP_PASSWORD_FILE: /run/secrets/app_password
+      COOKIE_SECURE: "true"
+      FORWARDED_ALLOW_IPS: "127.0.0.1"
+    volumes:
+      - ${APP_PASSWORD_PATH:?Password file is required}:/run/secrets/app_password:ro,Z
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18000/api/health')"]
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /data:uid=10001,gid=10001,mode=0700,size=2g
+      - /tmp:size=256m
+    mem_limit: 3g
+    cpus: 2
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
