@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+.pytest_cache/
+node_modules/
+dist/
+data/
+.DS_Store
+.playwright-mcp/
+.secrets/
+.env
+.env.*
+
+# Local instructions and working notes
+AGENTS.md
+agents.md
+CLAUDE.md
+DESING.md
+VERIFICATION.md
+/deploy/README.md
+.agents/
+.codex/
